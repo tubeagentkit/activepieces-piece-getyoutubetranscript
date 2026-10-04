@@ -1,0 +1,62 @@
+name: Publish piece to npm
+
+# Releases @tubeagentkit/piece-getyoutubetranscript from the pinned commit in PIECE_REF
+# of tubeagentkit/activepieces. Push a tag like v0.1.1 to publish, or run manually for a dry run.
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build (dry run, nothing is published)"
+        required: true
+        default: "0.0.0"
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      PIECE_DIR: ap/packages/pieces/community/getyoutubetranscript
+    steps:
+      - uses: actions/checkout@v6
+      - name: Resolve version
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = "push" ]; then V="${GITHUB_REF_NAME#v}"; else V="${{ inputs.version }}"; fi
+          echo "VERSION=$V" >> "$GITHUB_ENV"
+          echo "PIECE_REF=$(tr -d '[:space:]' < PIECE_REF)" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v6
+        with:
+          repository: tubeagentkit/activepieces
+          ref: ${{ env.PIECE_REF }}
+          path: ap
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.0"
+      - run: bun install
+        working-directory: ap
+      - name: Build the piece and the Activepieces CLI
+        run: npx turbo run build --filter=@activepieces/piece-getyoutubetranscript... --filter=@activepieces/cli...
+        working-directory: ap
+      - name: Bundle with the Activepieces CLI
+        run: npx -y tsx packages/cli/src/index.ts pieces bundle "$GITHUB_WORKSPACE/$PIECE_DIR"
+        working-directory: ap
+      - name: Apply npm name, version and README
+        run: node "$PIECE_DIR/npm/prepare-dist.mjs" "$VERSION"
+      - name: Smoke test the bundle
+        run: node -e "const {getyoutubetranscript:p}=require('./$PIECE_DIR/dist'); const a=Object.keys(p.actions()); console.log(p.displayName, a); if (a.length !== 3) process.exit(1)"
+      # Trusted publishing needs npm 11.5.1 or newer.
+      - run: npm install -g npm@latest
+      - name: Publish
+        if: github.event_name == 'push'
+        run: npm publish "$PIECE_DIR/dist" --access public
+      - name: Dry run
+        if: github.event_name == 'workflow_dispatch'
+        run: npm publish "$PIECE_DIR/dist" --access public --dry-run
